@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-green.svg)](https://github.com/evenwebb/AliClaimer)
-[![GitHub release](https://img.shields.io/badge/version-1.0.0-brightgreen.svg)](https://github.com/evenwebb/AliClaimer/releases)
+[![Version](https://img.shields.io/badge/version-1.0.0-brightgreen.svg)](https://github.com/evenwebb/AliClaimer)
 
 [Installation](#installation) • [Features](#features) • [Usage](#usage) • [Support](#support)
 
@@ -89,10 +89,24 @@ graph LR
 
 ### From Source (Developer Mode)
 
-1. **Download** or clone this repository
+> **⚠️ Important:** Choose a permanent location for the extension folder before loading it. Don't delete or move the folder after installation, as Chrome will lose access to the extension files.
+
+1. **Download the Repository**
+
+   Choose one of these methods:
+
+   **Option A - Git Clone (Recommended)**
    ```bash
+   # Clone to a permanent location (e.g., ~/Projects/)
+   cd ~/Projects/
    git clone https://github.com/evenwebb/AliClaimer.git
    ```
+
+   **Option B - Download ZIP**
+   - Click the green "Code" button on GitHub
+   - Select "Download ZIP"
+   - Extract to a **permanent location** (e.g., `~/Projects/AliClaimer/`)
+   - ⚠️ Don't extract to Downloads - it may get deleted!
 
 2. **Open Chrome Extensions**
    - Navigate to `chrome://extensions/`
@@ -100,9 +114,12 @@ graph LR
 
 3. **Load the Extension**
    - Click **Load unpacked**
-   - Select the `AliClaimer` folder
+   - Navigate to and select the `AliClaimer` folder
+   - Make sure you select the folder containing `manifest.json`
 
 4. **Done!** The extension icon should now appear in your browser toolbar
+
+> 💡 **Tip:** Keep the folder where you put it. If you move or delete it, you'll need to reload the extension.
 
 ---
 
@@ -220,15 +237,7 @@ AliClaimer/
 
 ### Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-### Building for Production
-
-The extension is ready to use as-is. To package for distribution:
-
-1. Ensure all files are in a single directory
-2. Zip the directory (exclude `.git` if present)
-3. Upload to Chrome Web Store or share the zip file
+Contributions are welcome! Feel free to open issues or submit pull requests.
 
 ---
 
