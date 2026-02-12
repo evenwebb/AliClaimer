@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      width: 360px;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      color: #333;
+      margin: 0;
+    }
+    h1 {
+      font-size: 16px;
+      margin: 0 0 12px 0;
+      color: #d3031c;
+    }
+    p {
+      margin: 0 0 12px 0;
+      color: #666;
+      line-height: 1.4;
+    }
+    .step {
+      background: #f8f8f8;
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+    .step strong { color: #333; }
+    button {
+      width: 100%;
+      padding: 12px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .btn-primary {
+      background: #d3031c;
+      color: white;
+      margin-bottom: 8px;
+    }
+    .btn-primary:hover:not(:disabled) {
+      background: #b00218;
+    }
+    .btn-secondary {
+      background: #eee;
+      color: #333;
+    }
+    .btn-secondary:hover:not(:disabled) {
+      background: #ddd;
+    }
+    #status {
+      margin-top: 12px;
+      padding: 10px;
+      background: #f0f8ff;
+      border-radius: 6px;
+      font-size: 13px;
+      min-height: 60px;
+    }
+    .progress {
+      margin: 8px 0;
+      font-size: 12px;
+      color: #666;
+    }
+    .error { color: #c00; }
+    .success { color: #0a0; }
+    .preview-toggle {
+      display: block;
+      margin-bottom: 12px;
+      font-size: 13px;
+      color: #666;
+      cursor: pointer;
+    }
+    .preview-toggle input { margin-right: 6px; }
+    .stats-box {
+      margin-top: 12px;
+      padding: 10px;
+      background: #f5f5f5;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .stats-box.empty { display: none; }
+    .stats-row { margin: 4px 0; }
+  </style>
+</head>
+<body>
+  <h1>AliExpress Coupon Claimer</h1>
+  <p>Claim £1 late delivery coupons from your orders. Go to your order list, then click Start.</p>
+
+  <div class="step">
+    <strong>Step 1:</strong> Open <a href="https://www.aliexpress.com/p/order/index.html" target="_blank">Your Orders</a>
+  </div>
+  <div class="step">
+    <strong>Step 2:</strong> Scroll down to load more orders if needed
+  </div>
+  <div class="step">
+    <strong>Step 3:</strong> Click Start to scan and claim
+  </div>
+
+  <label class="preview-toggle">
+    <input type="checkbox" id="previewCheck">
+    Preview mode (scan only, don't claim)
+  </label>
+
+  <button id="startBtn" class="btn-primary">Start Claiming Coupons</button>
+  <button id="stopBtn" class="btn-secondary" disabled>Stop</button>
+
+  <div id="stats" class="stats-box"></div>
+  <div id="status"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

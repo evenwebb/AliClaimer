@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "AliExpress Coupon Claimer",
+  "version": "1.0.0",
+  "description": "Automatically scan AliExpress orders and claim late delivery £1 coupons",
+  "icons": {
+    "16": "images/icon16.png",
+    "48": "images/icon48.png",
+    "128": "images/icon128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.aliexpress.com/*",
+    "https://*.aliexpress.com/*"
+  ],
+  "action": {
+    "default_icon": {
+      "16": "images/icon16.png",
+      "48": "images/icon48.png",
+      "128": "images/icon128.png"
+    },
+    "default_popup": "popup.html",
+    "default_title": "Claim AliExpress Coupons"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.aliexpress.com/p/order/index.html*"],
+      "js": ["content-order-list.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.aliexpress.com/p/order/detail.html*"],
+      "js": ["content-order-detail.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
