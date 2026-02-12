@@ -10,7 +10,7 @@
 [![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-green.svg)](https://github.com/evenwebb/AliClaimer)
 [![Version](https://img.shields.io/badge/version-1.0.0-brightgreen.svg)](https://github.com/evenwebb/AliClaimer)
 
-[Installation](#installation) • [Features](#features) • [Usage](#usage) • [Support](#support)
+[Installation](#-installation) • [Features](#-features) • [Usage](#-usage) • [Support](#-support)
 
 </div>
 
