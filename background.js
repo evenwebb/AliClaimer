@@ -6,18 +6,19 @@
 // Global state for the current claiming operation
 let claimingState = null;
 let timeoutId = null;
-let navigateDelayId = null;
 
 /** Default delay between navigating to the next order (milliseconds) */
 const DEFAULT_NAVIGATE_DELAY_MS = 1500;
 /** Per-order page timeout before skipping */
 const ORDER_TIMEOUT_MS = 25000;
+/** Maximum number of claimed order IDs to persist (prevents unbounded storage growth) */
+const MAX_CLAIMED_IDS = 500;
 
 async function getDelayMs() {
   try {
     const { aliclaimerDelay } = await chrome.storage.local.get('aliclaimerDelay');
     const val = parseInt(aliclaimerDelay, 10);
-    return (val >= 0 && val <= 10000) ? val : DEFAULT_NAVIGATE_DELAY_MS;
+    return (val >= 0 && val <= 15000) ? val : DEFAULT_NAVIGATE_DELAY_MS;
   } catch {
     return DEFAULT_NAVIGATE_DELAY_MS;
   }
@@ -36,15 +37,17 @@ async function addClaimedOrderId(orderId) {
   try {
     const ids = await getClaimedOrderIds();
     ids.add(orderId);
-    await chrome.storage.local.set({ aliclaimerClaimed: Array.from(ids) });
+    // Cap the stored list to prevent unbounded growth
+    let arr = Array.from(ids);
+    if (arr.length > MAX_CLAIMED_IDS) {
+      arr = arr.slice(arr.length - MAX_CLAIMED_IDS);
+    }
+    await chrome.storage.local.set({ aliclaimerClaimed: arr });
   } catch (e) {
     console.error('Failed to persist claimed order ID:', e);
   }
 }
 
-/**
- * Updates the extension badge to show the number of coupons found
- */
 function updateBadge(count) {
   if (count > 0) {
     const text = count > 999 ? '999+' : String(count);
@@ -59,12 +62,15 @@ function clearBadge() {
   chrome.action.setBadgeText({ text: '' });
 }
 
+/** Cancel all pending timers for the current claiming session */
+function cancelAllTimers(state) {
+  if (state?._timeoutId) clearTimeout(state._timeoutId);
+  if (state?._delayId) clearTimeout(state._delayId);
+}
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (claimingState?.tabId === tabId) {
-    clearTimeout(timeoutId);
-    clearTimeout(navigateDelayId);
-    timeoutId = null;
-    navigateDelayId = null;
+    cancelAllTimers(claimingState);
     claimingState = null;
     clearBadge();
     chrome.storage.local.set({ aliclaimerRunning: false }).catch(() => {});
@@ -123,17 +129,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     handleStartClaiming(msg, sender, sendResponse);
     return true;
   }
-
   if (msg.action === 'orderDetailDone') {
     handleOrderDetailDone(msg, sendResponse);
     return true;
   }
-
   if (msg.action === 'collectMoreOrders') {
     handleCollectMoreOrders(msg, sendResponse);
     return true;
   }
-
   if (msg.action === 'stop') {
     handleStop(msg, sendResponse);
     return true;
@@ -158,20 +161,39 @@ async function handleStartClaiming(msg, sender, sendResponse) {
     return;
   }
 
+  // Cancel any previous session
+  if (claimingState) {
+    cancelAllTimers(claimingState);
+    claimingState = null;
+  }
+
   // Clear previous order statuses for a fresh scan
   await chrome.storage.local.set({ aliclaimerOrderStatuses: [] });
+
+  // Track timers per-state to avoid cross-session leaks (fix #2)
+  const stateTimers = { _timeoutId: null, _delayId: null };
 
   claimingState = {
     orderUrls: validUrls,
     currentIndex: 0,
     tabId,
     previewMode: !!msg.previewMode,
-    orderListUrl: msg.orderListUrl || 'https://www.aliexpress.com/p/order/index.html',
+    // Use msg.orderListUrl as base for addClaimerParam (fix #5)
+    orderListBase: msg.orderListUrl || 'https://www.aliexpress.com/p/order/index.html',
     processedOrderIds: new Set(),
     couponsFound: 0,
     couponsClaimed: 0,
-    totalValueClaimed: 0
+    totalValueClaimed: 0,
+    totalChecked: 0,
+    _timeoutId: null,
+    _delayId: null
   };
+
+  // Copy timer refs into claimingState so cancelAllTimers can find them
+  Object.defineProperties(claimingState, {
+    _timeoutId: { get: () => stateTimers._timeoutId, set: (v) => { stateTimers._timeoutId = v; } },
+    _delayId: { get: () => stateTimers._delayId, set: (v) => { stateTimers._delayId = v; } }
+  });
 
   await updateStats({
     checked: 0,
@@ -183,14 +205,18 @@ async function handleStartClaiming(msg, sender, sendResponse) {
   });
 
   clearBadge();
-
-  const url = addClaimerParam(claimingState.orderUrls[0], claimingState.previewMode);
-  chrome.tabs.update(tabId, { url }).catch((e) => {
-    console.error('Failed to navigate to order:', e);
+  // Navigate first, then schedule timeout (fix #1)
+  const url = addClaimerParam(claimingState.orderUrls[0], claimingState.previewMode, claimingState.orderListBase);
+  try {
+    await chrome.tabs.update(tabId, { url });
+    scheduleTimeout(claimingState);
+  } catch (e) {
+    console.error('Failed to navigate to first order:', e);
     claimingState = null;
     clearBadge();
-  });
-  scheduleTimeout(tabId);
+    sendResponse({ ok: false, error: 'Failed to navigate to order' });
+    return;
+  }
   sendResponse({ ok: true });
 }
 
@@ -200,14 +226,14 @@ async function handleOrderDetailDone(msg, sendResponse) {
     return;
   }
 
-  clearTimeout(timeoutId);
-  timeoutId = null;
+  const state = claimingState;
+  clearTimeout(state._timeoutId);
+  state._timeoutId = null;
 
   const couponFound = msg.couponFound || 0;
   const couponClaimed = msg.couponClaimed || 0;
-  const valueClaimed = couponClaimed * 1; // £1 per coupon
-  const baseChecked = claimingState.baseChecked || 0;
-  const currentUrl = claimingState.orderUrls[claimingState.currentIndex];
+  const valueClaimed = couponClaimed * 1;
+  const currentUrl = state.orderUrls[state.currentIndex];
   const orderId = extractOrderId(currentUrl);
 
   // Track per-order status
@@ -218,54 +244,53 @@ async function handleOrderDetailDone(msg, sendResponse) {
       couponClaimed,
       timestamp: Date.now()
     });
-
-    // Persist claimed order IDs to skip on future scans
     if (couponClaimed > 0) {
       await addClaimedOrderId(orderId);
     }
   }
 
-  claimingState.couponsFound = (claimingState.couponsFound || 0) + couponFound;
-  claimingState.couponsClaimed = (claimingState.couponsClaimed || 0) + couponClaimed;
-  claimingState.totalValueClaimed = (claimingState.totalValueClaimed || 0) + valueClaimed;
-  claimingState.currentIndex++;
+  state.couponsFound = (state.couponsFound || 0) + couponFound;
+  state.couponsClaimed = (state.couponsClaimed || 0) + couponClaimed;
+  state.totalValueClaimed = (state.totalValueClaimed || 0) + valueClaimed;
+  state.currentIndex++;
+  state.totalChecked = (state.totalChecked || 0) + 1;
 
   await updateStats({
-    checked: baseChecked + claimingState.currentIndex,
-    couponsFound: claimingState.couponsFound,
-    couponsClaimed: claimingState.couponsClaimed,
-    totalValueClaimed: claimingState.totalValueClaimed
+    checked: state.totalChecked,
+    couponsFound: state.couponsFound,
+    couponsClaimed: state.couponsClaimed,
+    totalValueClaimed: state.totalValueClaimed
   });
 
-  updateBadge(claimingState.couponsFound);
+  updateBadge(state.couponsFound);
 
-  if (claimingState.currentIndex >= claimingState.orderUrls.length) {
-    claimingState.orderUrls.forEach(u => {
+  if (state.currentIndex >= state.orderUrls.length) {
+    state.orderUrls.forEach(u => {
       const m = u.match(/orderId=(\d+)/i);
-      if (m) claimingState.processedOrderIds.add(m[1]);
+      if (m) state.processedOrderIds.add(m[1]);
     });
-    requestLoadMore(claimingState);
+    requestLoadMore(state);
     claimingState = null;
     sendResponse({ ok: true, done: true });
     return;
   }
 
-  // Configurable delay before next order
+  // Configurable delay before next order — tracked per-state (fix #2, #3)
   const delayMs = await getDelayMs();
-  const savedState = claimingState;
-  clearTimeout(navigateDelayId);
-  navigateDelayId = setTimeout(() => {
-    navigateDelayId = null;
-    if (!claimingState || claimingState.tabId !== savedState.tabId) return;
+  clearTimeout(state._delayId);
+  state._delayId = setTimeout(() => {
+    state._delayId = null;
+    // claimingState may have been replaced; state is our saved reference
+    if (claimingState !== state) return;
 
-    const nextUrl = addClaimerParam(savedState.orderUrls[savedState.currentIndex], savedState.previewMode);
-    chrome.tabs.update(savedState.tabId, { url: nextUrl }).then(() => {
-      if (claimingState?.tabId === savedState.tabId) {
-        scheduleTimeout(savedState.tabId);
+    const nextUrl = addClaimerParam(state.orderUrls[state.currentIndex], state.previewMode, state.orderListBase);
+    chrome.tabs.update(state.tabId, { url: nextUrl }).then(() => {
+      if (claimingState === state) {
+        scheduleTimeout(state);
       }
     }).catch((e) => {
       console.error('Failed to navigate to next order:', e);
-      if (claimingState?.tabId === savedState.tabId) {
+      if (claimingState === state) {
         claimingState = null;
       }
     });
@@ -290,7 +315,6 @@ async function handleCollectMoreOrders(msg, sendResponse) {
       .filter(u => {
         const m = u.match(/orderId=(\d+)/i);
         if (!m) return false;
-        // Skip already processed AND previously claimed
         return !processedOrderIds.includes(m[1]) && !claimedIds.has(m[1]);
       });
 
@@ -303,28 +327,38 @@ async function handleCollectMoreOrders(msg, sendResponse) {
     }
 
     const baseChecked = aliclaimerLoadMore.totalChecked || 0;
+
+    const stateTimers = { _timeoutId: null, _delayId: null };
     claimingState = {
       orderUrls: newUrls,
       currentIndex: 0,
       tabId,
       previewMode,
-      orderListUrl,
+      orderListUrl: orderListUrl,
+      orderListBase: orderListUrl,
       processedOrderIds: new Set(processedOrderIds),
       baseChecked,
+      totalChecked: baseChecked,
       couponsFound: 0,
       couponsClaimed: 0,
-      totalValueClaimed: 0
+      totalValueClaimed: 0,
+      _timeoutId: null,
+      _delayId: null
     };
+    Object.defineProperties(claimingState, {
+      _timeoutId: { get: () => stateTimers._timeoutId, set: (v) => { stateTimers._timeoutId = v; } },
+      _delayId: { get: () => stateTimers._delayId, set: (v) => { stateTimers._delayId = v; } }
+    });
 
     await updateStats({ total: baseChecked + newUrls.length });
 
-    const url = addClaimerParam(claimingState.orderUrls[0], claimingState.previewMode);
+    const url = addClaimerParam(claimingState.orderUrls[0], claimingState.previewMode, claimingState.orderListBase);
     chrome.tabs.update(tabId, { url }).catch((e) => {
       console.error('Failed to navigate:', e);
       claimingState = null;
       clearBadge();
     });
-    scheduleTimeout(tabId);
+    scheduleTimeout(claimingState);
     sendResponse({ ok: true });
   } catch (e) {
     console.error('Failed to get load more state:', e);
@@ -335,15 +369,13 @@ async function handleCollectMoreOrders(msg, sendResponse) {
 async function handleStop(msg, sendResponse) {
   const state = claimingState;
   claimingState = null;
-  clearTimeout(timeoutId);
-  clearTimeout(navigateDelayId);
-  timeoutId = null;
-  navigateDelayId = null;
-
+  if (state) cancelAllTimers(state);
   clearBadge();
 
   await chrome.storage.local.remove('aliclaimerLoadMore').catch(() => {});
   await chrome.storage.local.set({ aliclaimerRunning: false }).catch(() => {});
+  // Clean up order statuses on stop (fix #4)
+  await chrome.storage.local.remove('aliclaimerOrderStatuses').catch(() => {});
 
   if (state?.tabId && state?.orderListUrl) {
     chrome.tabs.get(state.tabId).then(tab => {
@@ -358,53 +390,49 @@ async function handleStop(msg, sendResponse) {
   sendResponse({ ok: true });
 }
 
-function scheduleTimeout(tabId) {
-  clearTimeout(timeoutId);
-  timeoutId = setTimeout(() => {
-    timeoutId = null;
-
-    if (!claimingState || claimingState.tabId !== tabId) return;
-
-    const savedState = claimingState;
-    const baseChecked = savedState.baseChecked || 0;
+function scheduleTimeout(state) {
+  clearTimeout(state._timeoutId);
+  state._timeoutId = setTimeout(() => {
+    state._timeoutId = null;
+    if (claimingState !== state) return;
 
     updateStats({
-      checked: baseChecked + savedState.currentIndex + 1,
-      couponsFound: savedState.couponsFound || 0,
-      couponsClaimed: savedState.couponsClaimed || 0,
-      totalValueClaimed: savedState.totalValueClaimed || 0
+      checked: state.totalChecked + 1,
+      couponsFound: state.couponsFound || 0,
+      couponsClaimed: state.couponsClaimed || 0,
+      totalValueClaimed: state.totalValueClaimed || 0
     });
 
-    updateBadge(savedState.couponsFound || 0);
+    updateBadge(state.couponsFound || 0);
 
     // Mark current order as timed out
-    const currentUrl = savedState.orderUrls[savedState.currentIndex];
+    const currentUrl = state.orderUrls[state.currentIndex];
     const orderId = extractOrderId(currentUrl);
     if (orderId) {
       sendOrderStatus(orderId, { status: 'timeout', timestamp: Date.now() });
     }
 
-    claimingState.currentIndex++;
+    state.currentIndex++;
+    state.totalChecked = (state.totalChecked || 0) + 1;
 
-    if (claimingState.currentIndex >= claimingState.orderUrls.length) {
-      claimingState.orderUrls.forEach(u => {
+    if (state.currentIndex >= state.orderUrls.length) {
+      state.orderUrls.forEach(u => {
         const m = u.match(/orderId=(\d+)/i);
-        if (m) claimingState.processedOrderIds.add(m[1]);
+        if (m) state.processedOrderIds.add(m[1]);
       });
-      requestLoadMore(claimingState);
+      requestLoadMore(state);
       claimingState = null;
       return;
     }
 
-    const nextUrl = addClaimerParam(savedState.orderUrls[savedState.currentIndex], savedState.previewMode);
-
-    chrome.tabs.update(savedState.tabId, { url: nextUrl }).then(() => {
-      if (claimingState?.tabId === savedState.tabId) {
-        scheduleTimeout(savedState.tabId);
+    const nextUrl = addClaimerParam(state.orderUrls[state.currentIndex], state.previewMode, state.orderListBase);
+    chrome.tabs.update(state.tabId, { url: nextUrl }).then(() => {
+      if (claimingState === state) {
+        scheduleTimeout(state);
       }
     }).catch((e) => {
       console.error('Timeout: Failed to navigate to next order:', e);
-      if (claimingState?.tabId === savedState.tabId) {
+      if (claimingState === state) {
         claimingState = null;
       }
     });
@@ -415,13 +443,14 @@ function requestLoadMore(state) {
   if (!state) return;
 
   const processedOrderIds = Array.from(state.processedOrderIds || new Set());
+  // Use state.totalChecked for accurate count (fix #6)
   chrome.storage.local.set({
     aliclaimerLoadMore: {
       processedOrderIds,
       orderListUrl: state.orderListUrl,
       tabId: state.tabId,
       previewMode: state.previewMode,
-      totalChecked: processedOrderIds.length
+      totalChecked: state.totalChecked || processedOrderIds.length
     }
   }).catch((e) => {
     console.error('Failed to save load more state:', e);
@@ -433,13 +462,15 @@ function requestLoadMore(state) {
 }
 
 function finishClaiming(tabId) {
+  // Clean up order statuses on completion (fix #4)
+  chrome.storage.local.remove('aliclaimerOrderStatuses').catch(() => {});
   chrome.storage.local.set({ aliclaimerRunning: false }).catch(() => {});
   chrome.tabs.sendMessage(tabId, { action: 'showComplete' }).catch(() => {});
 }
 
-function addClaimerParam(url, previewMode) {
+function addClaimerParam(url, previewMode, baseUrl) {
   try {
-    const u = new URL(url, 'https://www.aliexpress.com');
+    const u = new URL(url, baseUrl || 'https://www.aliexpress.com');
     u.searchParams.set('aliclaimer', '1');
     if (previewMode) u.searchParams.set('aliclaimerpreview', '1');
     return u.toString();

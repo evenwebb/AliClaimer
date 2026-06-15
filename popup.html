@@ -178,6 +178,9 @@
       .order-status-item { border-bottom-color: #333; }
       .delay-config, .preview-toggle, p { color: #aaa; }
       h1 { color: #ff4444; }
+      .error { color: #ff6666; }
+      .success { color: #66ff66; }
+      .progress-container progress::-webkit-progress-bar { background-color: #444; }
     }
   </style>
 </head>
@@ -202,7 +205,7 @@
 
   <div class="delay-config">
     <span>Delay:</span>
-    <input type="range" id="delaySlider" min="0" max="5000" step="250" value="1500">
+    <input type="range" id="delaySlider" min="0" max="10000" step="250" value="1500">
     <span class="delay-value" id="delayValue">1.5s</span>
   </div>
 

@@ -21,7 +21,6 @@ async function clickProcessedTabAndCollect() {
       console.warn('AliClaimer: Failed to click Processed tab:', e);
     }
   }
-
   return await collectOrderUrlsWithRetry();
 }
 
@@ -57,9 +56,11 @@ async function loadOneMoreBatch() {
   }
 }
 
+/** Fetch claimed IDs once, then collect with retries (fix #12, #13) */
 async function collectOrderUrlsWithRetry(maxAttempts = 10) {
+  const claimedIds = await getClaimedOrderIds();
   for (let i = 0; i < maxAttempts; i++) {
-    const urls = await collectOrderUrlsFiltered();
+    const urls = collectOrderUrls(claimedIds);
     if (urls.length > 0) return urls;
     await new Promise(r => setTimeout(r, 800));
   }
@@ -79,58 +80,33 @@ async function loadMoreAndCollect() {
   }
 
   await loadOneMoreBatch();
+  const claimedIds = await getClaimedOrderIds();
   for (let i = 0; i < 10; i++) {
-    const urls = await collectOrderUrlsFiltered();
+    const urls = collectOrderUrls(claimedIds);
     if (urls.length > 0) return urls;
     await new Promise(r => setTimeout(r, 800));
   }
   return [];
 }
 
-// ── Auto-resume: check for pending load-more state on page load ──
-async function checkAutoResume() {
+// ── Single auto-resume handler (fix #10: was duplicated) ──
+async function handleResume(aliclaimerLoadMore) {
+  if (!aliclaimerLoadMore) return;
+  console.log('AliClaimer: Pending scan detected, auto-resuming...');
   try {
-    const { aliclaimerLoadMore } = await chrome.storage.local.get('aliclaimerLoadMore');
-    if (aliclaimerLoadMore) {
-      console.log('AliClaimer: Pending scan detected, auto-resuming...');
-      setTimeout(() => {
-        loadMoreAndCollect().then(orderUrls => {
-          try {
-            if (chrome.runtime?.id) {
-              chrome.runtime.sendMessage({ action: 'collectMoreOrders', orderUrls });
-            }
-          } catch (e) {
-            console.warn('AliClaimer: could not send message', e);
-          }
-        }).catch(e => {
-          console.error('AliClaimer: failed to load and collect orders', e);
-        });
-      }, 1200);
+    const orderUrls = await loadMoreAndCollect();
+    if (chrome.runtime?.id) {
+      chrome.runtime.sendMessage({ action: 'collectMoreOrders', orderUrls });
     }
   } catch (e) {
-    console.error('AliClaimer: failed to check for load more state', e);
+    console.error('AliClaimer: failed to load and collect orders', e);
   }
 }
 
-// Run auto-resume on page load
-checkAutoResume();
-
-// ── Original load-more handler (runs when the extension navigates back to order list) ──
+// Check on page load
 chrome.storage.local.get('aliclaimerLoadMore').then(({ aliclaimerLoadMore }) => {
   if (aliclaimerLoadMore) {
-    setTimeout(() => {
-      loadMoreAndCollect().then(orderUrls => {
-        try {
-          if (chrome.runtime?.id) {
-            chrome.runtime.sendMessage({ action: 'collectMoreOrders', orderUrls });
-          }
-        } catch (e) {
-          console.warn('AliClaimer: could not send message', e);
-        }
-      }).catch(e => {
-        console.error('AliClaimer: failed to load and collect orders', e);
-      });
-    }, 800);
+    setTimeout(() => handleResume(aliclaimerLoadMore), 800);
   }
 }).catch(e => {
   console.error('AliClaimer: failed to check for load more state', e);
@@ -146,14 +122,11 @@ async function getClaimedOrderIds() {
   }
 }
 
-async function collectOrderUrlsFiltered() {
-  const claimedIds = await getClaimedOrderIds();
-  return collectOrderUrls(claimedIds);
-}
-
-function collectOrderUrls(skipIds = new Set()) {
+/** Collect order URLs, skipping previously claimed IDs (fix #11: no default-param Set) */
+function collectOrderUrls(skipIds) {
   const seen = new Set();
   const urls = [];
+  const idSet = skipIds || new Set();
 
   try {
     const links = document.querySelectorAll('a[href*="orderId="], a[href*="detail.html"]');
@@ -168,8 +141,7 @@ function collectOrderUrls(skipIds = new Set()) {
 
         const orderId = match[1];
         if (seen.has(orderId)) continue;
-        if (skipIds.has(orderId)) continue;
-
+        if (idSet.has(orderId)) continue;
         seen.add(orderId);
 
         let fullUrl;
