@@ -59,7 +59,7 @@ async function loadOneMoreBatch() {
 
 async function collectOrderUrlsWithRetry(maxAttempts = 10) {
   for (let i = 0; i < maxAttempts; i++) {
-    const urls = collectOrderUrls();
+    const urls = await collectOrderUrlsFiltered();
     if (urls.length > 0) return urls;
     await new Promise(r => setTimeout(r, 800));
   }
@@ -80,13 +80,42 @@ async function loadMoreAndCollect() {
 
   await loadOneMoreBatch();
   for (let i = 0; i < 10; i++) {
-    const urls = collectOrderUrls();
+    const urls = await collectOrderUrlsFiltered();
     if (urls.length > 0) return urls;
     await new Promise(r => setTimeout(r, 800));
   }
   return [];
 }
 
+// ── Auto-resume: check for pending load-more state on page load ──
+async function checkAutoResume() {
+  try {
+    const { aliclaimerLoadMore } = await chrome.storage.local.get('aliclaimerLoadMore');
+    if (aliclaimerLoadMore) {
+      console.log('AliClaimer: Pending scan detected, auto-resuming...');
+      setTimeout(() => {
+        loadMoreAndCollect().then(orderUrls => {
+          try {
+            if (chrome.runtime?.id) {
+              chrome.runtime.sendMessage({ action: 'collectMoreOrders', orderUrls });
+            }
+          } catch (e) {
+            console.warn('AliClaimer: could not send message', e);
+          }
+        }).catch(e => {
+          console.error('AliClaimer: failed to load and collect orders', e);
+        });
+      }, 1200);
+    }
+  } catch (e) {
+    console.error('AliClaimer: failed to check for load more state', e);
+  }
+}
+
+// Run auto-resume on page load
+checkAutoResume();
+
+// ── Original load-more handler (runs when the extension navigates back to order list) ──
 chrome.storage.local.get('aliclaimerLoadMore').then(({ aliclaimerLoadMore }) => {
   if (aliclaimerLoadMore) {
     setTimeout(() => {
@@ -107,7 +136,22 @@ chrome.storage.local.get('aliclaimerLoadMore').then(({ aliclaimerLoadMore }) => 
   console.error('AliClaimer: failed to check for load more state', e);
 });
 
-function collectOrderUrls() {
+/** Get previously claimed order IDs from persistent storage */
+async function getClaimedOrderIds() {
+  try {
+    const { aliclaimerClaimed = [] } = await chrome.storage.local.get('aliclaimerClaimed');
+    return new Set(aliclaimerClaimed);
+  } catch {
+    return new Set();
+  }
+}
+
+async function collectOrderUrlsFiltered() {
+  const claimedIds = await getClaimedOrderIds();
+  return collectOrderUrls(claimedIds);
+}
+
+function collectOrderUrls(skipIds = new Set()) {
   const seen = new Set();
   const urls = [];
 
@@ -124,6 +168,7 @@ function collectOrderUrls() {
 
         const orderId = match[1];
         if (seen.has(orderId)) continue;
+        if (skipIds.has(orderId)) continue;
 
         seen.add(orderId);
 

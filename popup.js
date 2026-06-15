@@ -10,16 +10,65 @@ function renderStats(stats) {
     <div class="stats-row"><strong>Orders checked:</strong> ${stats.checked} / ${stats.total}</div>
     <div class="stats-row"><strong>Coupons found:</strong> ${stats.couponsFound}</div>
     ${!stats.previewMode ? `<div class="stats-row"><strong>Coupons claimed:</strong> ${stats.couponsClaimed || 0}</div>` : ''}
+    ${!stats.previewMode && stats.totalValueClaimed ? `<div class="stats-row"><strong>Total value:</strong> £${(stats.totalValueClaimed || 0).toFixed(2)}</div>` : ''}
     ${stats.previewMode ? '<div class="stats-row" style="color:#666">Preview mode – Coupons not claimed</div>' : ''}
   `;
+}
+
+function updateProgressBar(checked, total) {
+  const bar = document.getElementById('progressBar');
+  const pct = document.getElementById('progressPct');
+  if (total > 0) {
+    bar.value = checked;
+    bar.max = total;
+    pct.textContent = Math.round((checked / total) * 100) + '%';
+  } else {
+    bar.value = 0;
+    bar.max = 100;
+    pct.textContent = '0%';
+  }
+}
+
+function renderOrderStatuses(statuses) {
+  const list = document.getElementById('orderStatusList');
+  if (!statuses || statuses.length === 0) {
+    list.classList.add('empty');
+    list.innerHTML = '';
+    return;
+  }
+  list.classList.remove('empty');
+
+  const labels = { claimed: 'Claimed', found: 'Found', none: 'None', timeout: 'Timeout', pending: 'Pending' };
+  list.innerHTML = statuses.map(s => `
+    <div class="order-status-item">
+      <span class="order-status-dot ${s.status}"></span>
+      <span class="order-status-id">#${s.orderId.slice(-8)}</span>
+      <span class="order-status-label">${labels[s.status] || s.status}</span>
+    </div>
+  `).join('');
+
+  // Scroll to bottom to show latest
+  list.scrollTop = list.scrollHeight;
 }
 
 async function loadStats() {
   try {
     const { aliclaimerStats } = await chrome.storage.local.get('aliclaimerStats');
     renderStats(aliclaimerStats);
+    if (aliclaimerStats) {
+      updateProgressBar(aliclaimerStats.checked || 0, aliclaimerStats.total || 0);
+    }
   } catch (e) {
     console.error('Failed to load stats:', e);
+  }
+}
+
+async function loadOrderStatuses() {
+  try {
+    const { aliclaimerOrderStatuses = [] } = await chrome.storage.local.get('aliclaimerOrderStatuses');
+    renderOrderStatuses(aliclaimerOrderStatuses);
+  } catch (e) {
+    console.error('Failed to load order statuses:', e);
   }
 }
 
@@ -28,8 +77,33 @@ function updateButtonState(running) {
   document.getElementById('stopBtn').disabled = !running;
 }
 
+async function loadDelayConfig() {
+  try {
+    const { aliclaimerDelay } = await chrome.storage.local.get('aliclaimerDelay');
+    const val = aliclaimerDelay != null ? parseInt(aliclaimerDelay, 10) : 1500;
+    const slider = document.getElementById('delaySlider');
+    slider.value = val;
+    updateDelayLabel(val);
+  } catch (e) {
+    updateDelayLabel(1500);
+  }
+}
+
+function updateDelayLabel(ms) {
+  document.getElementById('delayValue').textContent = (ms / 1000).toFixed(1) + 's';
+}
+
+// Persist delay changes
+document.getElementById('delaySlider').addEventListener('input', (e) => {
+  const ms = parseInt(e.target.value, 10);
+  updateDelayLabel(ms);
+  chrome.storage.local.set({ aliclaimerDelay: ms }).catch(() => {});
+});
+
 async function loadPopupState() {
   await loadStats();
+  await loadOrderStatuses();
+  await loadDelayConfig();
   try {
     const { aliclaimerRunning } = await chrome.storage.local.get('aliclaimerRunning');
     updateButtonState(!!aliclaimerRunning);
@@ -87,10 +161,17 @@ document.addEventListener('DOMContentLoaded', loadPopupState);
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.aliclaimerStats) {
-    renderStats(changes.aliclaimerStats.newValue);
+    const stats = changes.aliclaimerStats.newValue;
+    renderStats(stats);
+    if (stats && stats.total) {
+      updateProgressBar(stats.checked || 0, stats.total);
+    }
   }
   if (changes.aliclaimerRunning) {
     updateButtonState(!!changes.aliclaimerRunning.newValue);
+  }
+  if (changes.aliclaimerOrderStatuses) {
+    renderOrderStatuses(changes.aliclaimerOrderStatuses.newValue);
   }
 });
 
@@ -146,7 +227,7 @@ document.getElementById('startBtn').addEventListener('click', async () => {
       throw new Error(startResponse?.error || 'Failed to start claiming process');
     }
 
-    setStatus(`Processing ${response.orderUrls.length} orders. Check stats below.`);
+    setStatus(`Processing ${response.orderUrls.length} orders. Check stats and order list below.`);
   } catch (e) {
     console.error('Start error:', e);
     const errorMsg = e.message || 'An error occurred. Please refresh the page and try again.';
