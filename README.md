@@ -286,7 +286,7 @@ Contributions are welcome! Feel free to open issues or submit pull requests.
 This project is licensed under the **GPL-3.0 License** - see the [LICENSE](LICENSE) file for details.
 
 ```
-Copyright (C) 2025 evenwebb (https://github.com/evenwebb)
+Copyright (C) 2025-2026 evenwebb (https://github.com/evenwebb)
 ```
 
 ---

@@ -283,7 +283,7 @@ function scheduleTimeout(tabId) {
       return;
     }
 
-    const nextUrl = addClaimerParam(savedState.orderUrls[savedState.currentIndex], savedState.debug);
+    const nextUrl = addClaimerParam(savedState.orderUrls[savedState.currentIndex], savedState.previewMode);
 
     chrome.tabs.update(savedState.tabId, { url: nextUrl }).then(() => {
       if (claimingState?.tabId === savedState.tabId) {
