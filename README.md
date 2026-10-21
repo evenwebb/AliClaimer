@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-green.svg)](https://github.com/evenwebb/AliClaimer)
-[![Version](https://img.shields.io/badge/version-1.0.0-brightgreen.svg)](https://github.com/evenwebb/AliClaimer)
+[![Version](https://img.shields.io/badge/version-2.0.0-brightgreen.svg)](https://github.com/evenwebb/AliClaimer)
 
 [Installation](#-installation) • [Features](#-features) • [Usage](#-usage) • [Support](#-support)
 
@@ -28,22 +28,22 @@ Visits each order and checks for late delivery coupons automatically
 </td>
 <td width="50%">
 
-### 🎯 One-Click Claiming
-Automatically clicks "Collect" when coupons are found
+### 🎯 Controlled Claiming
+Clicks at most one "Collect" control per order, with a configurable attempt limit
 
 </td>
 </tr>
 <tr>
 <td width="50%">
 
-### 🔍 Smart Filtering
-Only scans "Processed" (delivered) orders to save time
+### 🔍 Completed-order coupon status
+Automatically checks completed orders in hidden same-origin frames on page load (no tabs or windows are opened). Results are saved locally and reused for 24 hours. A Claim button appears only when AliExpress shows a claimable coupon; confirmed claims are recorded in History. Automatic checks can be switched off in the extension popup.
 
 </td>
 <td width="50%">
 
-### 📊 Progress Tracking
-Real-time stats showing orders checked and coupons claimed
+### 📊 Progress & History
+Track scan progress and review claimed, dismissed, and uncertain order outcomes
 
 </td>
 </tr>
@@ -148,7 +148,7 @@ graph LR
 
 **Step 3** - Claim Coupons
 ```
-▶️ Click "Start Claiming Coupons"
+▶️ Set the attempt limit and click "Start scan"
 ```
 
 </td></tr>
@@ -156,7 +156,7 @@ graph LR
 
 **Step 4** - Monitor Progress
 ```
-📊 Watch the stats update in real-time
+📊 Monitor progress, pause/resume, and review History
 ```
 
 </td></tr>
@@ -172,16 +172,17 @@ graph LR
 
 ### Tips & Tricks
 
-- 🔄 **No manual scrolling needed** - The extension automatically loads more orders as it scans
-- ⏸️ **Can resume** - Stop and restart anytime; it will continue from the order list
-- ⚡ **Safe to use** - Processes one order at a time to avoid rate limits
-- 🌐 **Works in background** - You can minimize the browser while it runs
+- 🔄 **Scans loaded batches** - AliClaimer follows the English Processed tab and loads available batches, up to a safety limit
+- 🎚️ **Set a claim limit** - Choose the maximum claim attempts per run and a pause between orders
+- ⏸️ **Pause and resume safely** - Restarts pause the scan; uncertain orders are recorded and not automatically retried
+- 🧾 **Review History** - Claimed, dismissed, attempted, and uncertain orders are stored locally; dismiss orders or clear history
+- ⚡ **Sequential processing** - Handles one order at a time and performs at most one coupon action per order
 
 ---
 
 ## 🔍 What It Looks For
 
-The extension searches for **"Collect"** buttons inside `.item-action` elements - specifically the ones that appear with the message:
+The extension currently supports the English AliExpress interface. It searches for **"Collect"** buttons inside `.item-action` elements - specifically the ones that appear with the message:
 
 > *"Sorry for the late delivery. As compensation here's a £1.00 coupon code."*
 
@@ -197,7 +198,7 @@ The extension searches for **"Collect"** buttons inside `.item-action` elements 
 | 🌐 No external servers | ✅ Extension doesn't send data anywhere |
 | 👁️ No tracking | ✅ Your orders and activities remain private |
 | 📖 Open source | ✅ Full code available for review |
-| 🔒 Minimal permissions | ✅ Only requests necessary permissions |
+| 🔒 Scoped page scripts | ✅ Scripts run on supported order pages; host access also includes AliExpress subdomains |
 
 </div>
 
@@ -205,11 +206,12 @@ The extension searches for **"Collect"** buttons inside `.item-action` elements 
 
 This extension requires the following permissions:
 
-- **`activeTab`** - To interact with the current AliExpress tab
-- **`scripting`** - To run scripts on AliExpress pages
 - **`storage`** - To save progress and statistics locally
-- **`tabs`** - To navigate between order pages
-- **`host_permissions (aliexpress.com)`** - To access AliExpress order pages
+- **`tabs`** - To identify the active order tab and navigate between order pages
+- **`alarms`** - To wake the background coordinator if a timer is interrupted
+- **`host_permissions (AliExpress)`** - Grants host access to `www.aliexpress.com` and its subdomains; packaged content scripts currently run only on the supported `www.aliexpress.com` order pages
+
+Order history (up to 1,000 records) and scan progress are stored in Chrome extension storage on this device. They are not sent to an external service. Review, dismiss, or clear records from the History view in the extension popup.
 
 ---
 
@@ -220,11 +222,11 @@ This extension requires the following permissions:
 ```
 AliClaimer/
 ├── 📄 manifest.json              # Extension configuration
-├── ⚙️ background.js              # Background service worker
-├── 🎨 popup.html                 # Extension popup UI
-├── 📜 popup.js                   # Popup logic
-├── 📋 content-order-list.js      # Script for order list page
-├── 📝 content-order-detail.js    # Script for order detail page
+├── ⚙️ background.js           # Durable scan coordinator and recovery
+├── 🎨 popup.html              # Scan controls and History view
+├── 📜 popup.js                # Popup state and local history
+├── 📋 content-order-list.js   # Order-list detection and pagination
+├── 📝 content-order-detail.js # Coupon detection and claim confirmation
 ├── 🖼️ images/                    # Icons and logo
 │   ├── icon16.png
 │   ├── icon48.png
@@ -247,6 +249,8 @@ Contributions are welcome! Feel free to open issues or submit pull requests.
 - 🔐 Requires manual login to AliExpress
 - 🐌 Processes orders sequentially (by design, to avoid rate limits)
 - 🏗️ Depends on AliExpress page structure (may break if they redesign)
+- 🌐 Requires the English AliExpress interface for coupon button detection
+- 🔁 A Chrome restart or extension reload pauses an active scan; review the uncertain order and explicitly resume
 
 ---
 

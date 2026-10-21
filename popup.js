@@ -1,271 +1,90 @@
-(function() {
-  'use strict';
+'use strict';
 
-  function renderStats(stats) {
-    const el = document.getElementById('stats');
-    if (!stats || (stats.checked === 0 && !stats.total)) {
-      el.classList.add('empty');
-      el.innerHTML = '';
-      return;
+const $ = id => document.getElementById(id);
+let latest = { session: null, history: [] };
+let collecting = false;
+let collectingTabId = null;
+function status(text, error = false) { $('status').textContent = text || ''; $('status').setAttribute('role', error ? 'alert' : 'status'); $('status').setAttribute('aria-live', error ? 'assertive' : 'polite'); }
+async function send(action, extra = {}) {
+  const response = await chrome.runtime.sendMessage({ action, ...extra });
+  if (!response?.ok) throw new Error(response?.error || 'The extension could not complete that action.');
+  return response;
+}
+function renderHistory(rows = []) {
+  const list = $('historyList'); list.replaceChildren();
+  if (!rows.length) { const empty=document.createElement('p'); empty.className='muted'; empty.textContent='No order history yet.'; list.append(empty); return; }
+  for (const row of [...rows].reverse()) {
+    const item=document.createElement('article'); item.className='history-row';
+    const content=document.createElement('div');
+    const title=document.createElement('div'); title.className='history-title'; title.textContent=`Order #${String(row.orderId).slice(-8)} · ${String(row.status||'unknown').replace(/^./,c=>c.toUpperCase())}`;
+    const note=document.createElement('div'); note.className='history-note'; const date=row.updatedAt?new Date(row.updatedAt).toLocaleString('en-GB'):''; note.textContent=[row.note,date].filter(Boolean).join(' · ');
+    content.append(title,note); item.append(content);
+    if (row.status !== 'claimed' && row.status !== 'dismissed' && row.status !== 'pending') {
+      const dismiss=document.createElement('button'); dismiss.className='action secondary small'; dismiss.textContent='Dismiss'; dismiss.setAttribute('aria-label',`Dismiss order ending ${String(row.orderId).slice(-8)}`);
+      dismiss.addEventListener('click',async()=>{ try{await send('dismissOrder',{orderId:row.orderId}); await refresh();}catch(e){status(e.message,true);} });
+      item.append(dismiss);
     }
-    el.classList.remove('empty');
-    // Guard against NaN in totalValueClaimed (fix #23)
-    const value = (typeof stats.totalValueClaimed === 'number' && !isNaN(stats.totalValueClaimed))
-      ? stats.totalValueClaimed.toFixed(2) : '0.00';
-    el.innerHTML = `
-      <div class="stats-row"><strong>Orders checked:</strong> ${stats.checked} / ${stats.total}</div>
-      <div class="stats-row"><strong>Coupons found:</strong> ${stats.couponsFound}</div>
-      ${!stats.previewMode ? `<div class="stats-row"><strong>Coupons claimed:</strong> ${stats.couponsClaimed || 0}</div>` : ''}
-      ${!stats.previewMode && stats.totalValueClaimed ? `<div class="stats-row"><strong>Total value:</strong> £${value}</div>` : ''}
-      ${stats.previewMode ? '<div class="stats-row" style="color:#666">Preview mode – Coupons not claimed</div>' : ''}
-    `;
+    list.append(item);
   }
-
-  function updateProgressBar(checked, total) {
-    const bar = document.getElementById('progressBar');
-    const pct = document.getElementById('progressPct');
-    if (total > 0) {
-      bar.value = checked;
-      bar.max = total;
-      pct.textContent = Math.round((checked / total) * 100) + '%';
-    } else {
-      bar.value = 0;
-      bar.max = 100;
-      pct.textContent = '0%';
-    }
-  }
-
-  function renderOrderStatuses(statuses) {
-    const list = document.getElementById('orderStatusList');
-    if (!statuses || statuses.length === 0) {
-      list.classList.add('empty');
-      list.innerHTML = '';
-      return;
-    }
-    list.classList.remove('empty');
-
-    const labels = { claimed: 'Claimed', found: 'Found', none: 'None', timeout: 'Timeout', pending: 'Pending' };
-    list.innerHTML = statuses.map(s => {
-      // Safe ID display — handle short or missing IDs (fix #19)
-      const id = s.orderId || '?';
-      const displayId = id.length >= 8 ? id.slice(-8) : id;
-      return `
-        <div class="order-status-item">
-          <span class="order-status-dot ${s.status}"></span>
-          <span class="order-status-id">#${displayId}</span>
-          <span class="order-status-label">${labels[s.status] || s.status}</span>
-        </div>
-      `;
-    }).join('');
-    list.scrollTop = list.scrollHeight;
-  }
-
-  async function loadStats() {
-    try {
-      const { aliclaimerStats } = await chrome.storage.local.get('aliclaimerStats');
-      renderStats(aliclaimerStats);
-      if (aliclaimerStats) {
-        updateProgressBar(aliclaimerStats.checked || 0, aliclaimerStats.total || 0);
-      }
-    } catch (e) {
-      console.error('Failed to load stats:', e);
-    }
-  }
-
-  async function loadOrderStatuses() {
-    try {
-      const { aliclaimerOrderStatuses = [] } = await chrome.storage.local.get('aliclaimerOrderStatuses');
-      renderOrderStatuses(aliclaimerOrderStatuses);
-    } catch (e) {
-      console.error('Failed to load order statuses:', e);
-    }
-  }
-
-  function updateButtonState(running) {
-    document.getElementById('startBtn').disabled = running;
-    document.getElementById('stopBtn').disabled = !running;
-  }
-
-  async function loadDelayConfig() {
-    const slider = document.getElementById('delaySlider');
-    try {
-      const { aliclaimerDelay } = await chrome.storage.local.get('aliclaimerDelay');
-      const val = aliclaimerDelay != null ? parseInt(aliclaimerDelay, 10) : 1500;
-      // Only update slider if user hasn't already moved it (fix #22)
-      if (!slider.dataset.userSet) {
-        slider.value = val;
-        updateDelayLabel(val);
-      }
-    } catch (e) {
-      if (!slider.dataset.userSet) {
-        slider.value = 1500;
-        updateDelayLabel(1500);
-      }
-    }
-  }
-
-  function updateDelayLabel(ms) {
-    document.getElementById('delayValue').textContent = (ms / 1000).toFixed(1) + 's';
-  }
-
-  // Persist delay changes — mark slider as user-modified (fix #22)
-  document.getElementById('delaySlider').addEventListener('input', (e) => {
-    e.target.dataset.userSet = '1';
-    const ms = parseInt(e.target.value, 10);
-    updateDelayLabel(ms);
-    chrome.storage.local.set({ aliclaimerDelay: ms }).catch(() => {});
-  });
-
-  async function loadPopupState() {
-    await loadStats();
-    await loadOrderStatuses();
-    await loadDelayConfig();
-    try {
-      const { aliclaimerRunning } = await chrome.storage.local.get('aliclaimerRunning');
-      updateButtonState(!!aliclaimerRunning);
-    } catch (e) {
-      console.error('Failed to load popup state:', e);
-    }
-  }
-
-  function setStatus(message, isError = false) {
-    const statusEl = document.getElementById('status');
-    statusEl.textContent = '';
-
-    if (typeof message === 'string') {
-      if (isError) {
-        const errorSpan = document.createElement('span');
-        errorSpan.className = 'error';
-        errorSpan.textContent = message;
-        statusEl.appendChild(errorSpan);
-      } else {
-        statusEl.textContent = message;
-      }
-    } else {
-      statusEl.appendChild(message);
-    }
-  }
-
-  function createLinkElement(text, url) {
-    const container = document.createElement('span');
-    container.className = 'error';
-    container.textContent = text + ' ';
-    const br = document.createElement('br');
-    container.appendChild(br);
-    const link = document.createElement('a');
-    link.href = url;
-    link.target = '_blank';
-    link.textContent = url.replace('https://', '');
-    container.appendChild(link);
-    return container;
-  }
-
-  async function sendMessageWithTimeout(tabId, message, timeoutMs = 10000) {
-    return Promise.race([
-      chrome.tabs.sendMessage(tabId, message),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Message timeout')), timeoutMs)
-      )
-    ]);
-  }
-
-  document.addEventListener('DOMContentLoaded', loadPopupState);
-
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local') return;
-    if (changes.aliclaimerStats) {
-      const stats = changes.aliclaimerStats.newValue;
-      renderStats(stats);
-      if (stats && stats.total) {
-        updateProgressBar(stats.checked || 0, stats.total);
-      }
-    }
-    if (changes.aliclaimerRunning) {
-      updateButtonState(!!changes.aliclaimerRunning.newValue);
-    }
-    if (changes.aliclaimerOrderStatuses) {
-      renderOrderStatuses(changes.aliclaimerOrderStatuses.newValue);
-    }
-  });
-
-  document.getElementById('startBtn').addEventListener('click', async () => {
-    const startBtn = document.getElementById('startBtn');
-    const stopBtn = document.getElementById('stopBtn');
-    const previewMode = document.getElementById('previewCheck').checked;
-
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-
-      if (!tab?.url?.includes('aliexpress.com/p/order/')) {
-        const linkEl = createLinkElement(
-          'Please open your AliExpress order list first:',
-          'https://www.aliexpress.com/p/order/index.html'
-        );
-        setStatus(linkEl);
-        return;
-      }
-
-      startBtn.disabled = true;
-      stopBtn.disabled = false;
-      setStatus(previewMode ? 'Scanning in preview mode (no claims)...' : 'Scanning for orders...');
-
-      let response;
-      try {
-        response = await sendMessageWithTimeout(tab.id, { action: 'collectOrders' });
-      } catch (e) {
-        throw new Error('Could not communicate with page. Please refresh and try again.');
-      }
-
-      if (!response?.orderUrls?.length) {
-        setStatus('No orders found. Scroll down to load more orders, then try again.', true);
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
-        chrome.storage.local.set({ aliclaimerRunning: false }).catch(() => {});
-        return;
-      }
-
-      setStatus(`Found ${response.orderUrls.length} orders. Starting${previewMode ? ' (preview)' : ''}...`);
-
-      chrome.storage.local.set({ aliclaimerRunning: true }).catch(() => {});
-
-      const startResponse = await chrome.runtime.sendMessage({
-        action: 'startClaiming',
-        orderUrls: response.orderUrls,
-        tabId: tab.id,
-        previewMode,
-        orderListUrl: tab.url
-      });
-
-      if (!startResponse?.ok) {
-        throw new Error(startResponse?.error || 'Failed to start claiming process');
-      }
-
-      setStatus(`Processing ${response.orderUrls.length} orders. Check stats and order list below.`);
-    } catch (e) {
-      console.error('Start error:', e);
-      const errorMsg = e.message || 'An error occurred. Please refresh the page and try again.';
-      setStatus(errorMsg, true);
-      startBtn.disabled = false;
-      stopBtn.disabled = true;
-      chrome.storage.local.set({ aliclaimerRunning: false }).catch(() => {});
-    }
-  });
-
-  document.getElementById('stopBtn').addEventListener('click', async () => {
-    try {
-      await chrome.runtime.sendMessage({ action: 'stop' });
-      setStatus('Stopped.');
-    } catch (e) {
-      console.error('Stop error:', e);
-      setStatus('Stopped.');
-    }
-    chrome.storage.local.set({ aliclaimerRunning: false }).catch(() => {});
-    updateButtonState(false);
-  });
-
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.action === 'progress' && typeof msg.text === 'string') {
-      setStatus(msg.text);
-    }
-  });
-})();
+}
+function render() {
+  const s=latest.session;
+  const names={running:'Scanning',paused:'Paused',complete:'Complete',stopped:'Stopped'};
+  $('runState').textContent=names[s?.status]||'Ready';
+  const active=s?.status==='running', paused=s?.status==='paused';
+  $('start').disabled=active||paused||collecting;
+  $('pause').disabled=!active;
+  $('stop').disabled=!active&&!paused&&!collecting;
+  $('resume').hidden=!paused;
+  $('progress').max=Math.max(1,s?.orderIds?.length||1);
+  $('progress').value=Math.min(s?.index||0,s?.orderIds?.length||0);
+  $('progressText').textContent=s ? `${Math.min(s.index,s.orderIds.length)} / ${s.orderIds.length} orders · ${s.confirmedTotal||s.claimedThisRun||0} confirmed claims` : '';
+  if (paused) status(s.pauseReason||'Paused. Resume when ready.');
+  else if (active) status(s.currentOrderId ? `Checking order #${s.currentOrderId.slice(-8)}…` : 'Waiting between orders…');
+  else if (s?.status==='complete') status('Scan complete. Review History.');
+  renderHistory(latest.history);
+}
+async function refresh() { try { latest=await send('getState'); render(); } catch(e) { status(e.message,true); } }
+async function collectFromActiveTab() {
+  const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
+  let url; try {url=new URL(tab?.url);} catch {}
+  if (!url||url.protocol!=='https:'||url.hostname!=='www.aliexpress.com'||url.pathname!=='/p/order/index.html') throw new Error('Open the AliExpress order list first.');
+  collectingTabId=tab.id;
+  let result;
+  try { result=await chrome.tabs.sendMessage(tab.id,{action:'collectOrders'}); }
+  catch { throw new Error('AliExpress page script is unavailable. Refresh the order list and try again.'); }
+  if (result?.cancelled) throw new Error('Order collection was cancelled.');
+  if (result?.error) throw new Error(result.error);
+  if (!result?.orderIds?.length) throw new Error('No orders were found. Check the Processed tab and refresh the page.');
+  if (result.warning) status(result.warning,true);
+  return {tab,result};
+}
+$('start').addEventListener('click',async()=>{
+  collecting=true; render(); status('Reading the Processed order list…');
+  try {
+    const {tab,result}=await collectFromActiveTab();
+    const maxClaims=Math.max(1,Math.min(100,parseInt($('maxClaims').value,10)||5));
+    const delayMs=Math.max(0,Math.min(60,parseInt($('delaySeconds').value,10)||0))*1000;
+    const {aliclaimerSettings={}}=await chrome.storage.local.get('aliclaimerSettings');
+    await chrome.storage.local.set({aliclaimerSettings:{...aliclaimerSettings,maxClaims,delayMs}});
+    const started=await send('startScan',{tabId:tab.id,orderIds:result.orderIds.map(String),previewMode:$('preview').checked,maxClaims,delayMs});
+    collecting=false; collectingTabId=null;
+    status(`Started with ${started.total} eligible orders.${result.warning ? ` ${result.warning}` : ''}`, !!result.warning);
+    await refresh();
+  } catch(e) { collecting=false; collectingTabId=null; status(e.message,e.message!=='Order collection was cancelled.'); render(); }
+});
+$('pause').addEventListener('click',async()=>{try{await send('pause');await refresh();}catch(e){status(e.message,true);}});
+$('resume').addEventListener('click',async()=>{try{await send('resume');await refresh();}catch(e){status(e.message,true);}});
+$('stop').addEventListener('click',async()=>{if(collecting){try{if(collectingTabId!=null)await chrome.tabs.sendMessage(collectingTabId,{action:'cancelCollection'});status('Stopping order collection…');}catch(e){status('Could not stop collection. Close or refresh the AliExpress tab.',true);}return;}try{await send('stop');status('Stopped.');await refresh();}catch(e){status(e.message,true);}});
+$('clearHistory').addEventListener('click',async()=>{if(!confirm('Clear all claimed and dismissed history? Future scans may include these orders again.'))return;try{await send('clearHistory');await refresh();status('History cleared.');}catch(e){status(e.message,true);}});
+function selectPage(history) {
+  $('scanTab').setAttribute('aria-selected',String(!history)); $('historyTab').setAttribute('aria-selected',String(history));
+  $('scanPanel').classList.toggle('active',!history); $('historyPanel').classList.toggle('active',history);
+}
+$('scanTab').addEventListener('click',()=>selectPage(false)); $('historyTab').addEventListener('click',()=>selectPage(true));
+$('maxClaims').addEventListener('change',async()=>{const value=Math.max(1,Math.min(100,parseInt($('maxClaims').value,10)||5));$('maxClaims').value=value;const {aliclaimerSettings={}}=await chrome.storage.local.get('aliclaimerSettings');await chrome.storage.local.set({aliclaimerSettings:{...aliclaimerSettings,maxClaims:value,delayMs:Math.max(0,Math.min(60,parseInt($('delaySeconds').value,10)||0))*1000}});});
+$('autoCheckCoupons').addEventListener('change',async()=>{const {aliclaimerSettings={}}=await chrome.storage.local.get('aliclaimerSettings');await chrome.storage.local.set({aliclaimerSettings:{...aliclaimerSettings,autoCheckCoupons:$('autoCheckCoupons').checked}});});
+$('debugCouponChecks').addEventListener('change',async()=>{const {aliclaimerSettings={}}=await chrome.storage.local.get('aliclaimerSettings');await chrome.storage.local.set({aliclaimerSettings:{...aliclaimerSettings,debugCouponChecks:$('debugCouponChecks').checked}});});
+$('delaySeconds').addEventListener('change',async()=>{const value=Math.max(0,Math.min(60,parseInt($('delaySeconds').value,10)||0));$('delaySeconds').value=value;const {aliclaimerSettings={}}=await chrome.storage.local.get('aliclaimerSettings');await chrome.storage.local.set({aliclaimerSettings:{...aliclaimerSettings,maxClaims:Math.max(1,Math.min(100,parseInt($('maxClaims').value,10)||5)),delayMs:value*1000}});});
+chrome.storage.onChanged.addListener((changes,area)=>{if(area==='local'&&(changes.aliclaimerSession||changes.aliclaimerHistory))refresh();});
+document.addEventListener('DOMContentLoaded',async()=>{const {aliclaimerSettings={}}=await chrome.storage.local.get('aliclaimerSettings');if(aliclaimerSettings.maxClaims)$('maxClaims').value=aliclaimerSettings.maxClaims;if(Number.isFinite(aliclaimerSettings.delayMs))$('delaySeconds').value=Math.floor(aliclaimerSettings.delayMs/1000);$('autoCheckCoupons').checked=aliclaimerSettings.autoCheckCoupons!==false;$('debugCouponChecks').checked=aliclaimerSettings.debugCouponChecks===true;await refresh();});
